@@ -1,4 +1,5 @@
 use colored::*;
+use dialoguer::{Confirm, Input, MultiSelect};
 use rusqlite::Connection;
 use std::process;
 
@@ -57,7 +58,8 @@ impl Todo {
                 })
             })
             .unwrap()
-            .map(|r| r.unwrap()).collect::<Vec<TodoEntity>>();
+            .map(|r| r.unwrap())
+            .collect::<Vec<TodoEntity>>();
 
         for (number, task) in todos.iter().enumerate() {
             let index = (number + 1).to_string().bold();
@@ -107,8 +109,18 @@ impl Todo {
     // Adds a new todo
     pub fn add(&self, args: &[String]) {
         if args.is_empty() {
-            eprintln!("todo add takes at least 1 argument");
-            process::exit(1);
+            println!("UI mode");
+            let title: String = Input::new()
+                .with_prompt("Title of todo")
+                .interact_text()
+                .unwrap();
+
+            self.conn
+                .execute("INSERT INTO todos (title) VALUES (?)", (title,))
+                .unwrap();
+            return;
+            // eprintln!("todo add takes at least 1 argument");
+            // process::exit(1);
         }
 
         for arg in args {
@@ -124,16 +136,11 @@ impl Todo {
 
     // Removes a task
     pub fn remove(&self, args: &[String]) {
-        if args.is_empty() {
-            eprintln!("todo rm takes at least 1 argument");
-            process::exit(1);
-        }
-
         let mut stmt = self
             .conn
             .prepare("SELECT id, title, done FROM todos")
             .unwrap();
-        let mut todos = stmt
+        let todos: Vec<TodoEntity> = stmt
             .query_map([], |row| {
                 Ok(TodoEntity {
                     id: row.get(0)?,
@@ -142,24 +149,61 @@ impl Todo {
                 })
             })
             .unwrap()
-            .map(|r| r.unwrap());
+            .map(|r| r.unwrap())
+            .collect();
 
-        for arg in args {
-            if arg.trim().is_empty() {
-                continue;
+        let selection;
+
+        if args.is_empty() {
+            if todos.is_empty() {
+                eprintln!("No tasks to remove");
+                process::exit(1);
             }
-            let ind: usize = match arg.parse() {
-                Ok(i) => i,
-                Err(_) => {
-                    eprintln!("Invalid index: {}", arg);
-                    continue;
-                }
-            };
-            let todo = todos.nth(ind - 1).unwrap();
+            let items = todos
+                .iter()
+                .map(|x| x.title.clone())
+                .collect::<Vec<String>>();
+
+            selection = MultiSelect::new()
+                .with_prompt("Choose tasks to remove")
+                .items(&items)
+                .interact()
+                .unwrap();
+        } else {
+            selection = args
+                .iter()
+                .map(|x| x.trim().parse::<usize>().unwrap() - 1)
+                .collect();
+        }
+
+        if selection.is_empty() {
+            eprintln!("No tasks chosen");
+            process::exit(1);
+        }
+
+        let confirmation = Confirm::new()
+            .with_prompt(format!(
+                "Are you sure you want to remove {} tasks?",
+                selection.len()
+            ))
+            .interact()
+            .unwrap();
+
+        if confirmation {
+            println!("Bye bye, todos!");
+        } else {
+            eprintln!("Todos safe :)");
+            return;
+        }
+
+        for arg in selection.clone() {
+            let todo = todos.get(arg).unwrap();
             self.conn
                 .execute("DELETE FROM todos WHERE id = ?", (todo.id,))
                 .unwrap();
         }
+
+        println!("{} tasks removed", selection.len());
     }
     // Clear todo by removing todo file
     pub fn reset(&self) {

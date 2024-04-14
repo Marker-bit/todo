@@ -10,6 +10,8 @@ description = "Simple todo cli program written in rust"
 rusqlite = { version = "0.31.0", features = ["bundled"] }
 colored = "2"
 directories = "5.0.1"
+dialoguer = "0.11.0"
+
 [[bin]]
 name = "todo"
 path = "src/main.rs"
