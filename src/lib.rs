@@ -1,100 +1,75 @@
 use colored::*;
-use std::fs;
-use std::fs::OpenOptions;
-use std::io::prelude::Read;
-use std::io::{self, BufReader, BufWriter, Write};
-use std::path::Path;
-use std::{env, process};
+use rusqlite::Connection;
+use std::process;
 
 pub struct Todo {
-    pub todo: Vec<String>,
+    pub conn: Connection,
     pub todo_path: String,
-    pub todo_bak: String,
-    pub no_backup: bool,
+}
+
+pub struct TodoEntity {
+    pub id: usize,
+    pub title: String,
+    pub done: bool,
 }
 
 impl Todo {
     pub fn new() -> Result<Self, String> {
-        let todo_path: String = match env::var("TODO_PATH") {
-            Ok(t) => t,
-            Err(_) => {
-                let home = env::var("HOME").unwrap();
+        // let todo_path: String = match env::var("TODO_PATH") {
+        //     Ok(t) => t,
+        //     Err(_) => {
+        //         let home = env::var("HOME").unwrap();
 
-                // Look for a legacy TODO file path
-                let legacy_todo = format!("{}/TODO", &home);
-                match Path::new(&legacy_todo).exists() {
-                    true => legacy_todo,
-                    false => format!("{}/.todo", &home),
-                }
-            }
-        };
+        //         // Look for a legacy TODO file path
+        //         let legacy_todo = format!("{}/TODO", &home);
+        //         match Path::new(&legacy_todo).exists() {
+        //             true => legacy_todo,
+        //             false => format!("{}/.todo", &home),
+        //         }
+        //     }
+        // };
 
-        let todo_bak: String = match env::var("TODO_BAK_DIR") {
-            Ok(t) => t,
-            Err(_) => String::from("/tmp/todo.bak"),
-        };
-
-        let no_backup = env::var("TODO_NOBACKUP").is_ok();
-
-        let todofile = OpenOptions::new()
-            .write(true)
-            .read(true)
-            .create(true)
-            .open(&todo_path)
-            .expect("Couldn't open the todofile");
-
-        // Creates a new buf reader
-        let mut buf_reader = BufReader::new(&todofile);
-
-        // Empty String ready to be filled with TODOs
-        let mut contents = String::new();
-
-        // Loads "contents" string with data
-        buf_reader.read_to_string(&mut contents).unwrap();
-
-        // Splits contents of the TODO file into a todo vector
-        let todo = contents.lines().map(str::to_string).collect();
+        let db = rusqlite::Connection::open("todo.db").unwrap();
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, done INTEGER DEFAULT 0)",
+            (),
+        )
+        .unwrap();
 
         // Returns todo
         Ok(Self {
-            todo,
-            todo_path,
-            todo_bak,
-            no_backup,
+            conn: db,
+            todo_path: "todo.db".to_string(),
         })
     }
 
     // Prints every todo saved
     pub fn list(&self) {
-        let stdout = io::stdout();
-        // Buffered writer for stdout stream
-        let mut writer = BufWriter::new(stdout);
-        let mut data = String::new();
-        // This loop will repeat itself for each task in TODO file
-        for (number, task) in self.todo.iter().enumerate() {
-            if task.len() > 5 {
-                // Converts virgin default number into a chad BOLD string
-                let number = (number + 1).to_string().bold();
+        let conn = &self.conn;
+        let mut stmt = conn.prepare("SELECT id, title, done FROM todos").unwrap();
 
-                // Saves the symbol of current task
-                let symbol = &task[..4];
-                // Saves a task without a symbol
-                let task = &task[4..];
+        let todos = stmt
+            .query_map([], |row| {
+                Ok(TodoEntity {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    done: row.get(2)?,
+                })
+            })
+            .unwrap()
+            .map(|r| r.unwrap()).collect::<Vec<TodoEntity>>();
 
-                // Checks if the current task is completed or not...
-                if symbol == "[*] " {
-                    // DONE
-                    // If the task is completed, then it prints it with a strikethrough
-                    data = format!("{} {}\n", number, task.strikethrough());
-                } else if symbol == "[ ] " {
-                    // NOT DONE
-                    // If the task is not completed yet, then it will print it as it is
-                    data = format!("{} {}\n", number, task);
-                }
-                writer
-                    .write_all(data.as_bytes())
-                    .expect("Failed to write to stdout");
+        for (number, task) in todos.iter().enumerate() {
+            let index = (number + 1).to_string().bold();
+            if task.done {
+                println!("{index} {}", task.title.strikethrough());
+            } else {
+                println!("{index} {}", task.title);
             }
+        }
+        if todos.len() == 0 {
+            println!("{}", "No tasks to show.".red());
+            println!("{}", "You can add one with todo add <tasks>.".bold());
         }
     }
 
@@ -105,32 +80,26 @@ impl Todo {
         } else if arg.is_empty() {
             eprintln!("todo raw takes 1 argument (done/todo)");
         } else {
-            let stdout = io::stdout();
-            // Buffered writer for stdout stream
-            let mut writer = BufWriter::new(stdout);
-            let mut data = String::new();
-            // This loop will repeat itself for each task in TODO file
-            for task in self.todo.iter() {
-                if task.len() > 5 {
-                    // Saves the symbol of current task
-                    let symbol = &task[..4];
-                    // Saves a task without a symbol
-                    let task = &task[4..];
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, title, done FROM todos")
+                .unwrap();
+            let todos = stmt
+                .query_map([], |row| {
+                    Ok(TodoEntity {
+                        id: row.get(0)?,
+                        title: row.get(1)?,
+                        done: row.get(2)?,
+                    })
+                })
+                .unwrap()
+                .map(|r| r.unwrap());
 
-                    // Checks if the current task is completed or not...
-                    if symbol == "[*] " && arg[0] == "done" {
-                        // DONE
-                        //If the task is completed, then it prints it with a strikethrough
-                        data = format!("{}\n", task);
-                    } else if symbol == "[ ] " && arg[0] == "todo" {
-                        // NOT DONE
-
-                        //If the task is not completed yet, then it will print it as it is
-                        data = format!("{}\n", task);
-                    }
-                    writer
-                        .write_all(data.as_bytes())
-                        .expect("Failed to write to stdout");
+            for task in todos {
+                if arg[0] == "todo" && !task.done {
+                    println!("[ ] {}", task.title);
+                } else if arg[0] == "done" && task.done {
+                    println!("[*] {}", task.title);
                 }
             }
         }
@@ -141,24 +110,15 @@ impl Todo {
             eprintln!("todo add takes at least 1 argument");
             process::exit(1);
         }
-        // Opens the TODO file with a permission to:
-        let todofile = OpenOptions::new()
-            .create(true) // a) create the file if it does not exist
-            .append(true) // b) append a line to it
-            .open(&self.todo_path)
-            .expect("Couldn't open the todofile");
 
-        let mut buffer = BufWriter::new(todofile);
         for arg in args {
             if arg.trim().is_empty() {
                 continue;
             }
 
-            // Appends a new task/s to the file
-            let line = format!("[ ] {}\n", arg);
-            buffer
-                .write_all(line.as_bytes())
-                .expect("unable to write data");
+            self.conn
+                .execute("INSERT INTO todos (title) VALUES (?)", (arg,))
+                .unwrap();
         }
     }
 
@@ -168,88 +128,80 @@ impl Todo {
             eprintln!("todo rm takes at least 1 argument");
             process::exit(1);
         }
-        // Opens the TODO file with a permission to:
-        let todofile = OpenOptions::new()
-            .write(true) // a) write
-            .truncate(true) // b) truncrate
-            .open(&self.todo_path)
-            .expect("Couldn't open the todo file");
 
-        let mut buffer = BufWriter::new(todofile);
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, title, done FROM todos")
+            .unwrap();
+        let mut todos = stmt
+            .query_map([], |row| {
+                Ok(TodoEntity {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    done: row.get(2)?,
+                })
+            })
+            .unwrap()
+            .map(|r| r.unwrap());
 
-        for (pos, line) in self.todo.iter().enumerate() {
-            if args.contains(&"done".to_string()) && &line[..4] == "[*] " {
+        for arg in args {
+            if arg.trim().is_empty() {
                 continue;
             }
-            if args.contains(&(pos + 1).to_string()) {
-                continue;
-            }
-
-            let line = format!("{}\n", line);
-
-            buffer
-                .write_all(line.as_bytes())
-                .expect("unable to write data");
+            let ind: usize = match arg.parse() {
+                Ok(i) => i,
+                Err(_) => {
+                    eprintln!("Invalid index: {}", arg);
+                    continue;
+                }
+            };
+            let todo = todos.nth(ind - 1).unwrap();
+            self.conn
+                .execute("DELETE FROM todos WHERE id = ?", (todo.id,))
+                .unwrap();
         }
-    }
-
-    fn remove_file(&self) {
-        match fs::remove_file(&self.todo_path) {
-            Ok(_) => {}
-            Err(e) => {
-                eprintln!("Error while clearing todo file: {}", e)
-            }
-        };
     }
     // Clear todo by removing todo file
     pub fn reset(&self) {
-        if !self.no_backup {
-            match fs::copy(&self.todo_path, &self.todo_bak) {
-                Ok(_) => self.remove_file(),
-                Err(_) => {
-                    eprint!("Couldn't backup the todo file")
-                }
-            }
-        } else {
-            self.remove_file();
-        }
+        eprint!("Not supported yet");
     }
     pub fn restore(&self) {
-        fs::copy(&self.todo_bak, &self.todo_path).expect("unable to restore the backup");
+        eprint!("Not supported yet");
     }
 
     // Sorts done tasks
     pub fn sort(&self) {
-        // Creates a new empty string
-        let newtodo: String;
+        eprint!("Not supported yet");
+        // // Creates a new empty string
+        // let newtodo: String;
 
-        let mut todo = String::new();
-        let mut done = String::new();
+        // let mut todo = String::new();
+        // let mut done = String::new();
 
-        for line in self.todo.iter() {
-            if line.len() > 5 {
-                if &line[..4] == "[ ] " {
-                    let line = format!("{}\n", line);
-                    todo.push_str(&line);
-                } else if &line[..4] == "[*] " {
-                    let line = format!("{}\n", line);
-                    done.push_str(&line);
-                }
-            }
-        }
+        // for line in self.todo.iter() {
+        //     if line.len() > 5 {
+        //         if &line[..4] == "[ ] " {
+        //             let line = format!("{}\n", line);
+        //             todo.push_str(&line);
+        //         } else if &line[..4] == "[*] " {
+        //             let line = format!("{}\n", line);
+        //             done.push_str(&line);
+        //         }
+        //     }
+        // }
 
-        newtodo = format!("{}{}", &todo, &done);
-        // Opens the TODO file with a permission to:
-        let mut todofile = OpenOptions::new()
-            .write(true) // a) write
-            .truncate(true) // b) truncrate
-            .open(&self.todo_path)
-            .expect("Couldn't open the todo file");
+        // newtodo = format!("{}{}", &todo, &done);
+        // // Opens the TODO file with a permission to:
+        // let mut todofile = OpenOptions::new()
+        //     .write(true) // a) write
+        //     .truncate(true) // b) truncrate
+        //     .open(&self.todo_path)
+        //     .expect("Couldn't open the todo file");
 
-        // Writes contents of a newtodo variable into the TODO file
-        todofile
-            .write_all(newtodo.as_bytes())
-            .expect("Error while trying to save the todofile");
+        // // Writes contents of a newtodo variable into the TODO file
+        // todofile
+        //     .write_all(newtodo.as_bytes())
+        //     .expect("Error while trying to save the todofile");
     }
 
     pub fn done(&self, args: &[String]) {
@@ -258,33 +210,32 @@ impl Todo {
             process::exit(1);
         }
 
-        // Opens the TODO file with a permission to overwrite it
-        let todofile = OpenOptions::new()
-            .write(true)
-            .open(&self.todo_path)
-            .expect("Couldn't open the todofile");
-        let mut buffer = BufWriter::new(todofile);
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, title, done FROM todos")
+            .unwrap();
+        let mut todos = stmt
+            .query_map([], |row| {
+                Ok(TodoEntity {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    done: row.get(2)?,
+                })
+            })
+            .unwrap()
+            .map(|r| r.unwrap());
 
-        for (pos, line) in self.todo.iter().enumerate() {
-            if line.len() > 5 {
-                if args.contains(&(pos + 1).to_string()) {
-                    if &line[..4] == "[ ] " {
-                        let line = format!("[*] {}\n", &line[4..]);
-                        buffer
-                            .write_all(line.as_bytes())
-                            .expect("unable to write data");
-                    } else if &line[..4] == "[*] " {
-                        let line = format!("[ ] {}\n", &line[4..]);
-                        buffer
-                            .write_all(line.as_bytes())
-                            .expect("unable to write data");
-                    }
-                } else if &line[..4] == "[ ] " || &line[..4] == "[*] " {
-                    let line = format!("{}\n", line);
-                    buffer
-                        .write_all(line.as_bytes())
-                        .expect("unable to write data");
-                }
+        for i in args {
+            let index: usize = i.parse().unwrap();
+            let todo = todos.nth(index - 1).unwrap();
+            if todo.done {
+                self.conn
+                    .execute("UPDATE todos SET done = 0 WHERE id = ?", (todo.id,))
+                    .unwrap();
+            } else {
+                self.conn
+                    .execute("UPDATE todos SET done = 1 WHERE id = ?", (todo.id,))
+                    .unwrap();
             }
         }
     }
